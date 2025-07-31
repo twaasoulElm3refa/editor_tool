@@ -1,5 +1,6 @@
 from celery import Celery
 from database import get_db_connection
+from openai import OpenAI
 
 celery = Celery("tasks", broker="redis://localhost:6379/0")
 
