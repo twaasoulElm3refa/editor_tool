@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request
 from dotenv import load_dotenv 
-from openai import OpenAI
+#from openai import OpenAI
 from fastapi.middleware.cors import CORSMiddleware
 from tasks import process_tool
 #from fastapi.responses import JSONResponse
