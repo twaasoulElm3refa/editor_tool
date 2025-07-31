@@ -5,7 +5,7 @@ from openai import OpenAI
 celery = Celery("tasks", broker="redis://localhost:6379/0")
 
 
-client = OpenAI(api_key=api_key)
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 #1
 def notes_into_publishable_material(report, date,journal_name=None ):
