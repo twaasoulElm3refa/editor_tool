@@ -1,10 +1,9 @@
 from celery import Celery
 from database import get_db_connection
 from openai import OpenAI
+import os 
 
-celery = Celery("tasks", broker="redis://localhost:6379/0")
-
-
+celery = Celery("tasks", broker="redis://red-d25l9u15pdvs73dnjklg:6379")
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 #1
