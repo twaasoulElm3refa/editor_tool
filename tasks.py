@@ -77,6 +77,9 @@ def summarizing_report(report):
 
 @celery.task
 def process_tool(row_id, tool_name,date,journal_name):
+    # Your processing logic
+    print(f"Processing task for {row_id} using tool {tool_name} on {date} for journal {journal_name}")
+  
     db = get_db_connection()
     cursor = db.cursor(dictionary=True)
 
