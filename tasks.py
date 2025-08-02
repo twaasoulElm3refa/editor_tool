@@ -75,7 +75,7 @@ def summarizing_report(report):
     return response.choices[0].message.content
 
 
-@celery.task
+@celery.tasks
 def process_tool(row_id, tool_name,date,journal_name):
     # Your processing logic
     print(f"Processing task for {row_id} using tool {tool_name} on {date} for journal {journal_name}")
