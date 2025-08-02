@@ -5,7 +5,7 @@ from database import get_db_connection
 import logging
 
 # Celery configuration with results backend
-celery = Celery("tasks", broker="redis://red-d25l9u15pdvs73dnjklg:6379", backend="redis://red-d25l9u15pdvs73dnjklg:6379")
+celery = Celery("tasks", broker="redis://localhost:6379/0", backend="redis://localhost:6379/0")
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Set up logging for Celery
