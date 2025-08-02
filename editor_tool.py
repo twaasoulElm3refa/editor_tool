@@ -25,6 +25,9 @@ app.add_middleware(
 @app.post("/editor_process")
 async def process_request(request: Request):
     data = await request.json()
+
+    if not all([data.get("id"), data.get("tool_name"), data.get("date"), data.get("journal_name")]):
+        return JSONResponse(status_code=400, content={"error": "Missing required fields"})
     if not data:
         print("Received an empty request")
     row_id = data.get("id")
