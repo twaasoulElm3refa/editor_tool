@@ -1,28 +1,26 @@
 from celery import Celery
-from database import get_db_connection
 from openai import OpenAI
-import os 
+import os
+from database import get_db_connection
 
-celery = Celery("tasks", broker="redis://red-d25l9u15pdvs73dnjklg:6379")
+# Celery configuration with results backend
+celery = Celery("tasks", broker="redis://red-d25l9u15pdvs73dnjklg:6379", backend="redis://red-d25l9u15pdvs73dnjklg:6379")
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# Task functions
 #1
 def notes_into_publishable_material(report, date,journal_name=None ):
-  
     prompt=f'''{report}انت صحفي عربي محترف وموضعي تقوم بتحويل ملاحظات المراسل الميداني إلى مادة قابلة للنشر
     مع تكوين عنون قوى بيوضح الاحداث المتضمنة فى المدخل 
     و {date} {journal_name} مع توضيح تاريخ و مكان الحدث واسم الجريدة اذا ذٌكرت فى المدخلات تحت العنوان الرئيسي مباشرة 
     مع استيفاء كل فقرة المعلومات بشكل مرتب ومحترف وغير مختصر  
     '''
-   
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
             {"role": "user", "content": prompt}
         ],
-        
     )
-    return response.choices[0].message.content
 
 #2
 def generate_report(data, date):
@@ -34,75 +32,71 @@ def generate_report(data, date):
 
 ✅ الأسلوب: صحفي سعودي احترافي، موضوعي، يشمل فقرات متماسكة، ولا يحتوي على مبالغة أو كلمات عامية.
   '''
-   
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
             {"role": "user", "content": prompt}
         ],
-        
     )
-    return response.choices[0].message.content
+    return response.choices[0].message.content 
 
 #3
 def re_edit_report(report):
-  
     prompt=f'''{report}أعد تحرير هذا الخبر بصياغة افتتاحية أقوى وأسلوب صحفي واضح
  '''
-    
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
             {"role": "user", "content": prompt}
-        ],
-        
+        ]
     )
     return response.choices[0].message.content
 
 #4
 def summarizing_report(report):
-  
     prompt=f'''{report} لخص هذا التقرير وعدّله ليكون مناسبًا للنشر في صحيفة سعودية
     '''
-
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
             {"role": "user", "content": prompt}
-        ],
-        
+        ], 
     )
     return response.choices[0].message.content
 
-
+# Celery task that will be triggered by FastAPI
 @celery.task
-def process_tool(row_id, tool_name,date,journal_name):
-    # Your processing logic
+def process_tool(row_id, tool_name, date, journal_name):
     print(f"Processing task for {row_id} using tool {tool_name} on {date} for journal {journal_name}")
-  
+
     db = get_db_connection()
     cursor = db.cursor(dictionary=True)
-
+    
+    # Fetch data from the database
     cursor.execute("SELECT entered_data FROM wpl3_editor_tool WHERE id = %s", (row_id,))
     row = cursor.fetchone()
+    
     if not row:
         cursor.close()
         db.close()
-        return
+        return "Error: Data not found"
 
     text = row["entered_data"]
 
-    # Simulated processing
+    # Process based on the tool name
     if tool_name == "notes_into_publishable_material":
         result = notes_into_publishable_material(text, date, journal_name)
     elif tool_name == "generate_report":
-        result = generate_report(text,date)
+        result = generate_report(text, date)
     elif tool_name == "re_edit_report":
-        result =re_edit_report(text)
+        result = re_edit_report(text)
     elif tool_name == "summarizing_report":
         result = summarizing_report(text)
 
+    # Update the result in the database
     cursor.execute("UPDATE wpl3_editor_tool SET result = %s WHERE id = %s", (result, row_id))
     db.commit()
     cursor.close()
     db.close()
+    
+    return result
