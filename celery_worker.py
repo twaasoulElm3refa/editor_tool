@@ -1,4 +1,8 @@
-from tasks import celery
+from celery import Celery
+import os
 
-# This file is used to launch the Celery worker
-# Run with: celery -A celery_worker.celery worker --loglevel=info
+# Initialize Celery app with Redis broker
+celery = Celery("tasks", broker=os.getenv("REDIS_URL"))
+
+# Import tasks from tasks.py (task functions)
+from tasks import process_tool
