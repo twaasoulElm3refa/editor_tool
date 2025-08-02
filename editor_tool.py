@@ -15,7 +15,7 @@ app = FastAPI()
 # Allow CORS from WP domain
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://11ai.ellevensa.com"],  # change to your WP domain in production
+    allow_origins=["*"],  # change to your WP domain in production https://11ai.ellevensa.com
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -27,12 +27,12 @@ async def process_request(request: Request):
     data = await request.json()
     row_id = data.get("id")
     tool_name = data.get("tool_name")
-    date=data.get("date")
-    journal_name=data.get("journal_name")
+    date = data.get("date")
+    journal_name = data.get("journal_name")
 
-    if not row_id or not tool_name:
+    # Check if any required field is missing
+    if not all([row_id, tool_name, date, journal_name]):
         return {"error": "Missing required fields."}
 
-    process_tool.delay(row_id, tool_name,date,journal_name)  # send to Celery queue
+    process_tool.delay(row_id, tool_name, date, journal_name)  # send to Celery queue
     return {"status": "queued", "row_id": row_id}
-
