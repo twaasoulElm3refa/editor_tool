@@ -25,6 +25,8 @@ app.add_middleware(
 @app.post("/editor_process")
 async def process_request(request: Request):
     data = await request.json()
+    if not data:
+        print("Received an empty request")
     row_id = data.get("id")
     tool_name = data.get("tool_name")
     date = data.get("date")
