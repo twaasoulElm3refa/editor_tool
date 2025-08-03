@@ -28,13 +28,13 @@ def get_db_connection():
         print(f"Error connecting to MySQL: {e}")
         return None
 
-'''def get_data_by_request_id(request_id):
+def get_data_by_request_id(request_id):
     try:
         connection = get_db_connection()
         cursor = connection.cursor(dictionary=True)
 
         query = """
-            SELECT * FROM wpl3_editor_tool
+            SELECT entered_data FROM wpl3_editor_tool
             WHERE id = %s
         """
         cursor.execute(query, (request_id,))
@@ -72,19 +72,4 @@ def update_editor_result(record_id, result):
     finally:
         if connection.is_connected():
             cursor.close()
-            connection.close()'''
-
-'''def insert_full_record(user_id, file_path, url, questions_number, custom_questions, faq_result):
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
-    try:
-        cursor.execute("""
-            INSERT INTO wpl3_FAQ (user_id, file_path, url, questions_number, custom_questions, FAQ_result,updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, NOW())
-        """, (user_id, file_path, url, questions_number, custom_questions, faq_result))
-        connection.commit()
-        return True
-    finally:
-         if connection.is_connected():
-            cursor.close()
-            connection.close()'''
+            connection.close()
