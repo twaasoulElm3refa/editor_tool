@@ -65,11 +65,9 @@ def summarizing_report(report):
     return response.choices[0].message.content
 
 
-# FastAPI endpoint to process requests
 @app.post("/editor_process")
 async def process_request(request: Request):
     try:
-        # Parse incoming JSON data
         data = await request.json()
 
         # Validate required fields
@@ -81,21 +79,13 @@ async def process_request(request: Request):
         date = data.get("date")
         journal_name = data.get("journal_name")
         
-        #db = get_db_connection()
-        #cursor = db.cursor(dictionary=True)
-        
         # Fetch data from the database
-        
         input_data = get_data_by_request_id(row_id)
-        #cursor.execute("SELECT entered_data FROM wpl3_editor_tool WHERE id = %s", (row_id,))
-        #row = cursor.fetchone()
-        
         if not input_data:
-            #cursor.close()
-            #db.close()
-            return "Error: Data not found"
+            return JSONResponse(status_code=404, content={"error": "لم يتم العثور على البيانات"})
+
         text = input_data["entered_data"]
-    
+
         # Process based on the tool name
         if tool_name == "notes_into_publishable_material":
             result = notes_into_publishable_material(text, date, journal_name)
@@ -105,17 +95,11 @@ async def process_request(request: Request):
             result = re_edit_report(text)
         elif tool_name == "summarizing_report":
             result = summarizing_report(text)
-    
-        # Update the result in the database
 
+        # Update the result in the database
         saved_result = update_editor_result(row_id, result)
-        print(saved_result)
         
-        #cursor.execute("UPDATE wpl3_editor_tool SET result = %s WHERE id = %s", (result, row_id))
-        #db.commit()
-        #cursor.close()
-        #db.close()
         return {"status": "completed", "result": result}
-        
+
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
