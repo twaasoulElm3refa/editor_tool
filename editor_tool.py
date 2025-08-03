@@ -98,8 +98,10 @@ async def process_request(request: Request):
 
         # Update the result in the database
         saved_result = update_editor_result(row_id, result)
+        print (saved_result)
         
-        return {"status": "completed", "result": result}
-
+        # Return result in response
+        return JSONResponse(status_code=200, content={"status": "completed", "result": result})
+        
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
