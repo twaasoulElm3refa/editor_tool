@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import os
-from database import get_db_connection , update_editor_result ,insert_full_record
+from database import get_db_connection , get_data_by_request_id , update_editor_result 
 from openai import OpenAI
 
 # Load environment variables
@@ -86,7 +86,7 @@ async def process_request(request: Request):
         
         # Fetch data from the database
         
-        input_data = update_editor_result(row_id)
+        input_data = get_data_by_request_id(row_id)
         #cursor.execute("SELECT entered_data FROM wpl3_editor_tool WHERE id = %s", (row_id,))
         #row = cursor.fetchone()
         
