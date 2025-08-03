@@ -59,9 +59,8 @@ def update_editor_result(record_id, result):
             result = "لا توجد نتيجة تم إنشاؤها"
         cursor = connection.cursor()
         query = """
-        "UPDATE wpl3_editor_tool SET result = %s WHERE id = %s",
-        VALUES (%s, %s)
-        """
+            UPDATE wpl3_editor_tool SET result = %s WHERE id = %s
+        """  # Fixed query syntax
         cursor.execute(query, (result, record_id))
         connection.commit()
         print("✅ Data inserted successfully into wpl3_editor_tool")
