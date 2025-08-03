@@ -1,21 +1,15 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from celery.result import AsyncResult
 from dotenv import load_dotenv
 import os
-import asyncio
-import subprocess
-import logging
-from tasks import process_tool
+from database import get_db_connection , update_editor_result ,insert_full_record
+from openai import OpenAI
 
 # Load environment variables
 load_dotenv()
 app = FastAPI()
-
-# Set up logging for FastAPI
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Allow CORS from WP domain
 app.add_middleware(
@@ -26,31 +20,55 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Check Redis connection
-def check_redis():
-    try:
-        # Check Redis server version
-        redis_version = subprocess.check_output(["redis-server", "--version"]).decode("utf-8")
-        logger.info(f"Redis version: {redis_version}")
+# Task functions
+#1
+def notes_into_publishable_material(report, date, journal_name=None):
+    prompt = f'''{report}انت صحفي عربي محترف وموضعي تقوم بتحويل ملاحظات المراسل الميداني إلى مادة قابلة للنشر
+        مع تكوين عنون قوى بيوضح الاحداث المتضمنة فى المدخل 
+        و {date} {journal_name} مع توضيح تاريخ و مكان الحدث واسم الجريدة اذا ذٌكرت فى المدخلات تحت العنوان الرئيسي مباشرة 
+        مع استيفاء كل فقرة المعلومات بشكل مرتب ومحترف وغير مختصر'''
 
-        # Ping Redis server to ensure it's running
-        ping_response = subprocess.check_output(["redis-cli", "ping"]).decode("utf-8")
-        if ping_response.strip() == "PONG":
-            logger.info("Redis is running and responding.")
-        else:
-            logger.error("Redis did not respond correctly.")
-            raise Exception("Redis server is not responding.")
-    except Exception as e:
-        logger.error(f"Error checking Redis: {str(e)}")
-        raise
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response.choices[0].message.content
+#2
+def generate_report(data, date):
+    prompt = f'''اقراء المعلومات والبيان جيدا {data}
+        لاستخراج المعلومات لتكوين تقرير صحفي احترافي حول هذا الحدث بدقة واتقان:
+        مع ذكر تاريخ اليوم{date} بعد العنوان الرئيسي مباشرة
+        اكتب تقريرًا صحفيًا احترافيًا حول الحدث المحلي التالي:'''
+    
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response.choices[0].message.content
+#3
+def re_edit_report(report):
+    prompt = f'''{report}أعد تحرير هذا الخبر بصياغة افتتاحية أقوى وأسلوب صحفي واضح'''
+
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response.choices[0].message.content
+#4
+def summarizing_report(report):
+    prompt = f'''{report} لخص هذا التقرير وعدّله ليكون مناسبًا للنشر في صحيفة سعودية'''
+
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response.choices[0].message.content
+
 
 # FastAPI endpoint to process requests
 @app.post("/editor_process")
 async def process_request(request: Request):
     try:
-        # Check if Redis is running
-        check_redis()
-
         # Parse incoming JSON data
         data = await request.json()
 
@@ -62,22 +80,42 @@ async def process_request(request: Request):
         tool_name = data.get("tool_name")
         date = data.get("date")
         journal_name = data.get("journal_name")
-
-        # Send task to Celery
-        task = process_tool.delay(row_id, tool_name, date, journal_name)  # Send to Celery queue
-        logger.info(f"Task {task.id} queued for processing.")
         
-        # Poll for task completion
-        while not task.ready():
-            await asyncio.sleep(1)  # Wait for the task to complete
+        #db = get_db_connection()
+        #cursor = db.cursor(dictionary=True)
         
-        if task.successful():
-            logger.info(f"Task {task.id} completed successfully.")
-            return {"status": "completed", "result": task.result}
-        else:
-            logger.error(f"Task {task.id} failed.")
-            return {"status": "failed", "error": task.result}
+        # Fetch data from the database
+        
+        input_data = update_editor_result(row_id)
+        #cursor.execute("SELECT entered_data FROM wpl3_editor_tool WHERE id = %s", (row_id,))
+        #row = cursor.fetchone()
+        
+        if not input_data:
+            #cursor.close()
+            #db.close()
+            return "Error: Data not found"
+        text = input_data["entered_data"]
     
+        # Process based on the tool name
+        if tool_name == "notes_into_publishable_material":
+            result = notes_into_publishable_material(text, date, journal_name)
+        elif tool_name == "generate_report":
+            result = generate_report(text, date)
+        elif tool_name == "re_edit_report":
+            result = re_edit_report(text)
+        elif tool_name == "summarizing_report":
+            result = summarizing_report(text)
+    
+        # Update the result in the database
+
+        saved_result = update_editor_result(row_id, result)
+        print(saved_result)
+        
+        #cursor.execute("UPDATE wpl3_editor_tool SET result = %s WHERE id = %s", (result, row_id))
+        #db.commit()
+        #cursor.close()
+        #db.close()
+        return {"status": "completed", "result": result}
+        
     except Exception as e:
-        logger.error(f"Error processing request: {str(e)}")
         return JSONResponse(status_code=500, content={"error": str(e)})
