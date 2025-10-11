@@ -220,4 +220,4 @@ def chat(body: ChatIn, authorization: Optional[str] = Header(None)):
             # Surface a readable error to the client without crashing the stream
             yield f"\n[خطأ]: {str(e)}"
 
-    return StreamingResponse(stream(), media_type="text/plain"
+    return StreamingResponse(stream(), media_type="text/plain")
