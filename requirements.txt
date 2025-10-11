@@ -3,7 +3,7 @@ uvicorn
 openai
 python-dotenv
 mysql-connector-python
-
 requests==2.31.0
 celery
 redis
+PyJWT== 2.10.1
