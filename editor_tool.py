@@ -7,31 +7,31 @@ from typing import Optional, List
 
 import os, time, uuid, re, requests, jwt
 
-# If you keep this helper in your project:
-# - we only need get_data_by_request_id as a fallback
+# Optional DB helper (fallback only). Safe if you don't ship this file.
 try:
     from database import get_data_by_request_id  # noqa: F401
 except Exception:
-    get_data_by_request_id = None  # safe fallback
+    get_data_by_request_id = None  # if not available, we won't use it
 
 from openai import OpenAI
 
 # -----------------------------------------------------------------------------
-# Setup
+# Environment / Setup
 # -----------------------------------------------------------------------------
 load_dotenv()
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o")        # for tools/editor
-OPENAI_CHAT_FAST  = os.getenv("OPENAI_CHAT_FAST",  "gpt-4o-mini")   # for chat streaming
-
-JWT_SECRET  = os.getenv("JWT_SECRET",  "CHANGE_ME_DEV_SECRET")      # set in prod!
-NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")                        # NewsAPI.org key (or swap to Bing/Tavily)
+OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY", "")
+OPENAI_CHAT_MODEL  = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o")        # used by /editor_process
+OPENAI_CHAT_FAST   = os.getenv("OPENAI_CHAT_FAST",  "gpt-4o-mini")   # used by /chat (streaming)
+JWT_SECRET         = os.getenv("JWT_SECRET", "CHANGE_ME_DEV_SECRET") # set a strong secret in prod
+NEWS_API_KEY       = os.getenv("NEWS_API_KEY", "")                   # NewsAPI.org key (optional)
+AUTO_NEWS_SEARCH   = os.getenv("AUTO_NEWS_SEARCH", "0") == "1"       # 1 => search every chat
+DEFAULT_NEWS_LANG  = os.getenv("NEWS_LANG", "ar")                    # news language
 
 app = FastAPI()
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# CORS — tighten to your WP domain in production, e.g. ["https://example.com"]
+# CORS — restrict to your WP origin in production
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -41,7 +41,7 @@ app.add_middleware(
 )
 
 # -----------------------------------------------------------------------------
-# Task functions (editor tools)
+# Editor tasks
 # -----------------------------------------------------------------------------
 def notes_into_publishable_material(report: str, date: str, journal_name: Optional[str] = None) -> str:
     prompt = (
@@ -53,7 +53,7 @@ def notes_into_publishable_material(report: str, date: str, journal_name: Option
     )
     r = client.chat.completions.create(
         model=OPENAI_CHAT_MODEL,
-        messages=[{"role": "user", "content": prompt}]
+        messages=[{"role": "user", "content": prompt}],
     )
     return r.choices[0].message.content
 
@@ -64,7 +64,7 @@ def generate_report(data: str, date: str) -> str:
     )
     r = client.chat.completions.create(
         model=OPENAI_CHAT_MODEL,
-        messages=[{"role": "user", "content": prompt}]
+        messages=[{"role": "user", "content": prompt}],
     )
     return r.choices[0].message.content
 
@@ -72,7 +72,7 @@ def re_edit_report(report: str) -> str:
     prompt = f"{report}\n\nأعد تحرير هذا الخبر بصياغة افتتاحية أقوى وأسلوب صحفي واضح."
     r = client.chat.completions.create(
         model=OPENAI_CHAT_MODEL,
-        messages=[{"role": "user", "content": prompt}]
+        messages=[{"role": "user", "content": prompt}],
     )
     return r.choices[0].message.content
 
@@ -80,20 +80,20 @@ def summarizing_report(report: str) -> str:
     prompt = f"{report}\n\nلخص هذا التقرير وعدّله ليكون مناسبًا للنشر في صحيفة سعودية."
     r = client.chat.completions.create(
         model=OPENAI_CHAT_MODEL,
-        messages=[{"role": "user", "content": prompt}]
+        messages=[{"role": "user", "content": prompt}],
     )
     return r.choices[0].message.content
 
 # -----------------------------------------------------------------------------
-# /editor_process — called by the WordPress plugin
+# /editor_process — called by WP to generate the article
 # -----------------------------------------------------------------------------
 @app.post("/editor_process")
 async def process_request(request: Request):
     """
-    Body (JSON):
-      id, tool_name, date, journal_name?, text?
-    We prefer 'text' from WP to avoid DB coupling. If missing, we can fallback
-    to get_data_by_request_id(id) if you keep that helper.
+    Body JSON:
+      { id, tool_name, date, journal_name?, text? }
+    Prefer 'text' sent from WordPress. If missing and a DB helper exists,
+    we fallback to get_data_by_request_id(id).
     """
     try:
         data = await request.json()
@@ -107,7 +107,7 @@ async def process_request(request: Request):
         journal_name = data.get("journal_name")
         text         = (data.get("text") or "").strip()
 
-        # Optional fallback to DB if you didn't pass 'text' from WP:
+        # Optional fallback via DB helper
         if not text and get_data_by_request_id:
             rec = get_data_by_request_id(row_id)
             if not rec:
@@ -133,7 +133,7 @@ async def process_request(request: Request):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 # -----------------------------------------------------------------------------
-# Chat session + streaming chat with on-demand news search
+# Chat session + streaming chat (with on-demand / automatic news search)
 # -----------------------------------------------------------------------------
 class SessionIn(BaseModel):
     user_id: int
@@ -145,11 +145,11 @@ class SessionOut(BaseModel):
 
 class VisibleValue(BaseModel):
     id: Optional[int] = None
-    organization_name: Optional[str] = None   # journal_name in WP
-    about_press: Optional[str] = None         # entered_data in WP
-    press_date: Optional[str] = None          # date in WP
-    article: Optional[str] = None             # last article (localStorage)
-    result: Optional[str] = None              # saved/edited result
+    organization_name: Optional[str] = None  # journal_name in WP
+    about_press: Optional[str] = None        # entered_data in WP
+    press_date: Optional[str] = None         # date in WP
+    article: Optional[str] = None            # last article (localStorage)
+    result: Optional[str] = None             # saved/edited result
 
 class ChatIn(BaseModel):
     session_id: str
@@ -163,7 +163,7 @@ def _make_jwt(session_id: str, user_id: int) -> str:
         "sid": session_id,
         "uid": user_id,
         "iat": int(time.time()),
-        "exp": int(time.time()) + 60 * 60 * 2,  # 2h
+        "exp": int(time.time()) + 60 * 60 * 2,  # 2 hours
     }
     return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
@@ -176,7 +176,7 @@ def _verify_jwt(bearer: Optional[str]):
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-# --- Visible values → system context ---
+# --- Visible values → compact Arabic context ---
 def _values_to_context(values: List[VisibleValue]) -> str:
     if not values:
         return "لا توجد بيانات مرئية حالياً لهذا المستخدم."
@@ -195,11 +195,11 @@ def _values_to_context(values: List[VisibleValue]) -> str:
         parts.append(f"أحدث مسودة/نص محفوظ: {snippet2}")
     return " | ".join(parts) if parts else "لا توجد تفاصيل كافية."
 
-# --- News search helpers (NewsAPI.org; swap if you prefer Bing/Tavily/GNews) ---
-def search_news(query: str, lang: str = "ar", max_items: int = 6) -> str:
+# --- News search (NewsAPI.org adapter). Swap this if you prefer Bing/Tavily/GNews. ---
+def search_news(query: str, lang: str = DEFAULT_NEWS_LANG, max_items: int = 6) -> str:
     """
-    Pull recent headlines/descriptions/URLs for grounding.
-    Returns a compact Arabic block. If NEWS_API_KEY is missing, returns ''.
+    Returns a compact Arabic block of recent headlines/descriptions/URLs.
+    If NEWS_API_KEY is missing, returns '' (no-op).
     """
     if not NEWS_API_KEY or not query:
         return ""
@@ -238,17 +238,18 @@ def search_news(query: str, lang: str = "ar", max_items: int = 6) -> str:
         return ""
 
 def extract_query(msg: str) -> str:
+    """Arabic heuristics to derive a search query from user text."""
     if not msg:
         return ""
     s = msg.strip()
 
-    # allow commands like "/بحث غزة" or "بحث: غزة"
+    # Commands like "/بحث غزة" or "بحث: غزة"
     m = re.match(r"^/?(?:بحث|ابحث)\s*[:\-]?\s*(.+)$", s, re.IGNORECASE)
     if m:
         return m.group(1).strip()
 
-    # heuristic for “latest / real news” requests
-    if re.search(r"(آخر|أحدث|اليوم|خبر حقيقي|تحديث)", s):
+    # Generic “latest” requests
+    if re.search(r"(آخر|أحدث|اليوم|خبر حقيقي|تحديث|مصادر حديثة)", s):
         s = re.sub(r"^(?:اكتب|أنشئ|اعمل|قدّم|لخص|حلّل|تحدّث|حدث)\s+", "", s)
         s = re.sub(r"(من فضلك|رجاءً|لو سمحت)\s*", "", s)
         return s.strip()
@@ -270,33 +271,39 @@ def chat(body: ChatIn, authorization: Optional[str] = Header(None)):
     user_msg = (body.message or "").strip()
 
     # 1) Decide whether to fetch fresh news
-    wants_search = bool(
+    manual_trigger = bool(
         re.search(r"(?:^|[\s/])(بحث|ابحث)\b", user_msg) or
-        re.search(r"(آخر|أحدث|اليوم|خبر حقيقي|مصادر حديثة)", user_msg)
+        re.search(r"(آخر|أحدث|اليوم|خبر حقيقي|تحديث|مصادر حديثة)", user_msg)
     )
+    wants_search = AUTO_NEWS_SEARCH or manual_trigger
 
     news_block = ""
     if wants_search:
         q = extract_query(user_msg)
-        if not q and body.visible_values:
-            v = body.visible_values[0]
-            # fallback to something meaningful
-            q = v.organization_name or v.about_press or v.result or ""
+
+        # If auto and no explicit query, derive from visible values or user text
+        if AUTO_NEWS_SEARCH and not q:
+            if body.visible_values:
+                v = body.visible_values[0]
+                q = (v.organization_name or v.about_press or v.result or "").strip()
+            if not q:
+                q = user_msg
             q = (q or "").split("\n")[0][:120]
+
         news_block = search_news(q)
 
-    # 2) Build system prompt with clear guidance (no “can’t browse” talk)
+    # 2) Build system prompt
     sys_prompt = (
         "أنت مساعد تحرير عربي موثوق.\n"
         "• لا تذكر قيود التدريب أو عدم القدرة على التصفح صراحةً.\n"
         "• إن كانت الحقائق غير كافية، اطلب تفاصيل محددة أو مصادر إضافية.\n"
-        "• إن تلقيت (نتائج بحث)، فاعتمد عليها كمصدر حديث للوقائع.\n\n"
+        "• إن تلقيت (نتائج بحث)، فاعتمد عليها كمصدر حديث للوقائع واذكر أنها مستندة إلى هذه النتائج عند اللزوم.\n\n"
         f"البيانات المرئية الحالية: {context}\n"
     )
     if news_block:
         sys_prompt += "\nنتائج بحث حديثة ذات صلة:\n" + news_block + "\n"
 
-    # 3) Stream response
+    # 3) Stream reply
     def stream():
         try:
             resp = client.chat.completions.create(
@@ -304,9 +311,9 @@ def chat(body: ChatIn, authorization: Optional[str] = Header(None)):
                 temperature=0.2,
                 messages=[
                     {"role": "system", "content": sys_prompt},
-                    {"role": "user",   "content": user_msg}
+                    {"role": "user",   "content": user_msg},
                 ],
-                stream=True
+                stream=True,
             )
             for chunk in resp:
                 delta = None
@@ -319,7 +326,7 @@ def chat(body: ChatIn, authorization: Optional[str] = Header(None)):
 
     return StreamingResponse(stream(), media_type="text/plain")
 
-# Optional: testable news endpoint
+# Optional manual testing endpoint
 @app.get("/news_search")
 def news_search(q: str):
     return {"q": q, "results": search_news(q)}
