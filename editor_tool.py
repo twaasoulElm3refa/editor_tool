@@ -2,18 +2,36 @@ from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-import os, time, uuid, jwt
-from typing import Optional, List
 from pydantic import BaseModel, Field
-# Keep imports if you want fallback; API will NOT write to DB now
-from database import get_db_connection, get_data_by_request_id  # , update_editor_result
+from typing import Optional, List
+
+import os, time, uuid, re, requests, jwt
+
+# If you keep this helper in your project:
+# - we only need get_data_by_request_id as a fallback
+try:
+    from database import get_data_by_request_id  # noqa: F401
+except Exception:
+    get_data_by_request_id = None  # safe fallback
+
 from openai import OpenAI
 
+# -----------------------------------------------------------------------------
+# Setup
+# -----------------------------------------------------------------------------
 load_dotenv()
-app = FastAPI()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-JWT_SECRET = os.getenv("JWT_SECRET", "CHANGE_ME_DEV_SECRET")
 
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o")        # for tools/editor
+OPENAI_CHAT_FAST  = os.getenv("OPENAI_CHAT_FAST",  "gpt-4o-mini")   # for chat streaming
+
+JWT_SECRET  = os.getenv("JWT_SECRET",  "CHANGE_ME_DEV_SECRET")      # set in prod!
+NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")                        # NewsAPI.org key (or swap to Bing/Tavily)
+
+app = FastAPI()
+client = OpenAI(api_key=OPENAI_API_KEY)
+
+# CORS — tighten to your WP domain in production, e.g. ["https://example.com"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,50 +40,64 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def notes_into_publishable_material(report, date, journal_name=None):
-    prompt = f'''{report}انت صحفي عربي محترف وموضعي تقوم بتحويل ملاحظات المراسل الميداني إلى مادة قابلة للنشر
-        مع تكوين عنون قوى بيوضح الاحداث المتضمنة فى المدخل 
-        و {date} {journal_name} مع توضيح تاريخ و مكان الحدث واسم الجريدة اذا ذٌكرت فى المدخلات تحت العنوان الرئيسي مباشرة 
-        مع استيفاء كل فقرة المعلومات بشكل مرتب ومحترف وغير مختصر'''
-    response = client.chat.completions.create(
-        model="gpt-4o",
+# -----------------------------------------------------------------------------
+# Task functions (editor tools)
+# -----------------------------------------------------------------------------
+def notes_into_publishable_material(report: str, date: str, journal_name: Optional[str] = None) -> str:
+    prompt = (
+        f"{report}\n"
+        "انت صحفي عربي محترف وموضعي تقوم بتحويل ملاحظات المراسل الميداني إلى مادة قابلة للنشر "
+        "مع تكوين عنوان قوي يوضح الأحداث المتضمنة في المدخل. "
+        f"اذكر {date} واسم الجريدة إن وُجد ({journal_name}) تحت العنوان مباشرة. "
+        "اجعل الفقرات مرتبة وواضحة وغير مختصرة."
+    )
+    r = client.chat.completions.create(
+        model=OPENAI_CHAT_MODEL,
         messages=[{"role": "user", "content": prompt}]
     )
-    return response.choices[0].message.content
+    return r.choices[0].message.content
 
-def generate_report(data, date):
-    prompt = f'''اقراء المعلومات والبيان جيدا {data}
-        لاستخراج المعلومات لتكوين تقرير صحفي احترافي حول هذا الحدث بدقة واتقان:
-        مع ذكر تاريخ اليوم{date} بعد العنوان الرئيسي مباشرة
-        اكتب تقريرًا صحفيًا احترافيًا حول الحدث المحلي التالي:'''
-    response = client.chat.completions.create(
-        model="gpt-4o",
+def generate_report(data: str, date: str) -> str:
+    prompt = (
+        f"اقرأ المعلومات التالية بعناية ثم اكتب تقريرًا صحفيًا احترافيًا حول الحدث:\n{data}\n\n"
+        f"ضع تاريخ اليوم {date} أسفل العنوان مباشرة. اجعل العرض دقيقًا وواضحًا."
+    )
+    r = client.chat.completions.create(
+        model=OPENAI_CHAT_MODEL,
         messages=[{"role": "user", "content": prompt}]
     )
-    return response.choices[0].message.content
+    return r.choices[0].message.content
 
-def re_edit_report(report):
-    prompt = f'''{report}أعد تحرير هذا الخبر بصياغة افتتاحية أقوى وأسلوب صحفي واضح'''
-    response = client.chat.completions.create(
-        model="gpt-4o",
+def re_edit_report(report: str) -> str:
+    prompt = f"{report}\n\nأعد تحرير هذا الخبر بصياغة افتتاحية أقوى وأسلوب صحفي واضح."
+    r = client.chat.completions.create(
+        model=OPENAI_CHAT_MODEL,
         messages=[{"role": "user", "content": prompt}]
     )
-    return response.choices[0].message.content
+    return r.choices[0].message.content
 
-def summarizing_report(report):
-    prompt = f'''{report} لخص هذا التقرير وعدّله ليكون مناسبًا للنشر في صحيفة سعودية'''
-    response = client.chat.completions.create(
-        model="gpt-4o",
+def summarizing_report(report: str) -> str:
+    prompt = f"{report}\n\nلخص هذا التقرير وعدّله ليكون مناسبًا للنشر في صحيفة سعودية."
+    r = client.chat.completions.create(
+        model=OPENAI_CHAT_MODEL,
         messages=[{"role": "user", "content": prompt}]
     )
-    return response.choices[0].message.content
+    return r.choices[0].message.content
 
+# -----------------------------------------------------------------------------
+# /editor_process — called by the WordPress plugin
+# -----------------------------------------------------------------------------
 @app.post("/editor_process")
 async def process_request(request: Request):
+    """
+    Body (JSON):
+      id, tool_name, date, journal_name?, text?
+    We prefer 'text' from WP to avoid DB coupling. If missing, we can fallback
+    to get_data_by_request_id(id) if you keep that helper.
+    """
     try:
         data = await request.json()
 
-        # Required
         if not all([data.get("id"), data.get("tool_name"), data.get("date")]):
             return JSONResponse(status_code=400, content={"error": "Missing required fields"})
 
@@ -73,14 +105,14 @@ async def process_request(request: Request):
         tool_name    = data.get("tool_name")
         date         = data.get("date")
         journal_name = data.get("journal_name")
-        text         = data.get("text")  # Prefer raw text from WP
+        text         = (data.get("text") or "").strip()
 
-        if not text:
-            # Fallback (legacy): read from DB if raw text wasn't provided
-            input_data = get_data_by_request_id(row_id)
-            if not input_data:
+        # Optional fallback to DB if you didn't pass 'text' from WP:
+        if not text and get_data_by_request_id:
+            rec = get_data_by_request_id(row_id)
+            if not rec:
                 return JSONResponse(status_code=404, content={"error": "لم يتم العثور على البيانات"})
-            text = input_data.get("entered_data", "")
+            text = (rec.get("entered_data") or "").strip()
 
         if not text:
             return JSONResponse(status_code=400, content={"error": "لا يوجد نص لمعالجته"})
@@ -96,13 +128,13 @@ async def process_request(request: Request):
         else:
             return JSONResponse(status_code=400, content={"error": "أداة غير معروفة"})
 
-        # Do NOT write to WP DB here — single writer is WP
         return JSONResponse(status_code=200, content={"status": "completed", "result": result})
-
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-# -------- Chat session + streaming --------
+# -----------------------------------------------------------------------------
+# Chat session + streaming chat with on-demand news search
+# -----------------------------------------------------------------------------
 class SessionIn(BaseModel):
     user_id: int
     wp_nonce: Optional[str] = None
@@ -113,11 +145,11 @@ class SessionOut(BaseModel):
 
 class VisibleValue(BaseModel):
     id: Optional[int] = None
-    organization_name: Optional[str] = None
-    about_press: Optional[str] = None
-    press_date: Optional[str] = None
-    article: Optional[str] = None
-    result: Optional[str] = None
+    organization_name: Optional[str] = None   # journal_name in WP
+    about_press: Optional[str] = None         # entered_data in WP
+    press_date: Optional[str] = None          # date in WP
+    article: Optional[str] = None             # last article (localStorage)
+    result: Optional[str] = None              # saved/edited result
 
 class ChatIn(BaseModel):
     session_id: str
@@ -125,12 +157,13 @@ class ChatIn(BaseModel):
     message: str
     visible_values: List[VisibleValue] = Field(default_factory=list)
 
+# --- JWT helpers ---
 def _make_jwt(session_id: str, user_id: int) -> str:
     payload = {
         "sid": session_id,
         "uid": user_id,
         "iat": int(time.time()),
-        "exp": int(time.time()) + 60 * 60 * 2,
+        "exp": int(time.time()) + 60 * 60 * 2,  # 2h
     }
     return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
@@ -143,13 +176,16 @@ def _verify_jwt(bearer: Optional[str]):
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
+# --- Visible values → system context ---
 def _values_to_context(values: List[VisibleValue]) -> str:
     if not values:
         return "لا توجد بيانات مرئية حالياً لهذا المستخدم."
     v = values[0]
     parts = []
-    if v.organization_name: parts.append(f"اسم الجريدة/المنظمة: {v.organization_name}")
-    if v.press_date:        parts.append(f"تاريخ البيان/التقرير: {v.press_date}")
+    if v.organization_name:
+        parts.append(f"اسم الجريدة/المنظمة: {v.organization_name}")
+    if v.press_date:
+        parts.append(f"تاريخ البيان/التقرير: {v.press_date}")
     if v.about_press:
         snippet = (v.about_press[:600] + "…") if len(v.about_press) > 600 else v.about_press
         parts.append(f"ملخص المدخلات: {snippet}")
@@ -159,6 +195,67 @@ def _values_to_context(values: List[VisibleValue]) -> str:
         parts.append(f"أحدث مسودة/نص محفوظ: {snippet2}")
     return " | ".join(parts) if parts else "لا توجد تفاصيل كافية."
 
+# --- News search helpers (NewsAPI.org; swap if you prefer Bing/Tavily/GNews) ---
+def search_news(query: str, lang: str = "ar", max_items: int = 6) -> str:
+    """
+    Pull recent headlines/descriptions/URLs for grounding.
+    Returns a compact Arabic block. If NEWS_API_KEY is missing, returns ''.
+    """
+    if not NEWS_API_KEY or not query:
+        return ""
+
+    try:
+        r = requests.get(
+            "https://newsapi.org/v2/everything",
+            params={
+                "q": query,
+                "language": lang,
+                "sortBy": "publishedAt",
+                "pageSize": max_items,
+                "apiKey": NEWS_API_KEY,
+            },
+            timeout=15,
+        )
+        j = r.json()
+        arts = (j.get("articles") or [])[:max_items]
+        if not arts:
+            return ""
+        lines = []
+        for a in arts:
+            title = (a.get("title") or "").strip()
+            src   = ((a.get("source") or {}).get("name") or "").strip()
+            date  = (a.get("publishedAt") or "")[:10]
+            desc  = (a.get("description") or "").strip()
+            url   = (a.get("url") or "").strip()
+            if title:
+                lines.append(f"- {title} — {src} ({date})")
+            if desc:
+                lines.append(f"  {desc}")
+            if url:
+                lines.append(f"  {url}")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+def extract_query(msg: str) -> str:
+    if not msg:
+        return ""
+    s = msg.strip()
+
+    # allow commands like "/بحث غزة" or "بحث: غزة"
+    m = re.match(r"^/?(?:بحث|ابحث)\s*[:\-]?\s*(.+)$", s, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+
+    # heuristic for “latest / real news” requests
+    if re.search(r"(آخر|أحدث|اليوم|خبر حقيقي|تحديث)", s):
+        s = re.sub(r"^(?:اكتب|أنشئ|اعمل|قدّم|لخص|حلّل|تحدّث|حدث)\s+", "", s)
+        s = re.sub(r"(من فضلك|رجاءً|لو سمحت)\s*", "", s)
+        return s.strip()
+
+    return ""
+
+# --- Routes ---
 @app.post("/session", response_model=SessionOut)
 def create_session(body: SessionIn):
     sid = str(uuid.uuid4())
@@ -168,32 +265,61 @@ def create_session(body: SessionIn):
 @app.post("/chat")
 def chat(body: ChatIn, authorization: Optional[str] = Header(None)):
     _verify_jwt(authorization)
-    context = _values_to_context(body.visible_values)
-    sys_prompt = (
-        "أنت مساعد تحرير عربي موثوق. اعتمد على البيانات المرئية والدُروس المستفادة من النصوص السابقة. "
-        "إذا كانت المعلومة غير متوفرة، صرّح بذلك واقترح ما يلزم للحصول عليها.\n\n"
-        f"البيانات المرئية الحالية: {context}"
-    )
-    user_msg = body.message or ""
 
+    context  = _values_to_context(body.visible_values)
+    user_msg = (body.message or "").strip()
+
+    # 1) Decide whether to fetch fresh news
+    wants_search = bool(
+        re.search(r"(?:^|[\s/])(بحث|ابحث)\b", user_msg) or
+        re.search(r"(آخر|أحدث|اليوم|خبر حقيقي|مصادر حديثة)", user_msg)
+    )
+
+    news_block = ""
+    if wants_search:
+        q = extract_query(user_msg)
+        if not q and body.visible_values:
+            v = body.visible_values[0]
+            # fallback to something meaningful
+            q = v.organization_name or v.about_press or v.result or ""
+            q = (q or "").split("\n")[0][:120]
+        news_block = search_news(q)
+
+    # 2) Build system prompt with clear guidance (no “can’t browse” talk)
+    sys_prompt = (
+        "أنت مساعد تحرير عربي موثوق.\n"
+        "• لا تذكر قيود التدريب أو عدم القدرة على التصفح صراحةً.\n"
+        "• إن كانت الحقائق غير كافية، اطلب تفاصيل محددة أو مصادر إضافية.\n"
+        "• إن تلقيت (نتائج بحث)، فاعتمد عليها كمصدر حديث للوقائع.\n\n"
+        f"البيانات المرئية الحالية: {context}\n"
+    )
+    if news_block:
+        sys_prompt += "\nنتائج بحث حديثة ذات صلة:\n" + news_block + "\n"
+
+    # 3) Stream response
     def stream():
         try:
-          response = client.chat.completions.create(
-              model="gpt-4o-mini",
-              temperature=0.2,
-              messages=[
-                  {"role": "system", "content": sys_prompt},
-                  {"role": "user",   "content": user_msg}
-              ],
-              stream=True
-          )
-          for chunk in response:
-              delta = None
-              if chunk.choices and hasattr(chunk.choices[0], "delta"):
-                  delta = getattr(chunk.choices[0].delta, "content", None)
-              if delta:
-                  yield delta
+            resp = client.chat.completions.create(
+                model=OPENAI_CHAT_FAST,
+                temperature=0.2,
+                messages=[
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user",   "content": user_msg}
+                ],
+                stream=True
+            )
+            for chunk in resp:
+                delta = None
+                if chunk.choices and hasattr(chunk.choices[0], "delta"):
+                    delta = getattr(chunk.choices[0].delta, "content", None)
+                if delta:
+                    yield delta
         except Exception as e:
-          yield f"\n[خطأ]: {str(e)}"
+            yield f"\n[خطأ]: {str(e)}"
 
     return StreamingResponse(stream(), media_type="text/plain")
+
+# Optional: testable news endpoint
+@app.get("/news_search")
+def news_search(q: str):
+    return {"q": q, "results": search_news(q)}
