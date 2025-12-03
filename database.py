@@ -34,7 +34,7 @@ def get_data_by_request_id(request_id):
         cursor = connection.cursor(dictionary=True)
 
         query = """
-            SELECT entered_data FROM wpl3_editor_tool
+            SELECT entered_data FROM A11i_editor_tool
             WHERE id = %s
         """
         cursor.execute(query, (request_id,))
@@ -59,11 +59,11 @@ def update_editor_result(record_id, result):
             result = "لا توجد نتيجة تم إنشاؤها"
         cursor = connection.cursor()
         query = """
-            UPDATE wpl3_editor_tool SET result = %s WHERE id = %s
+            UPDATE A11i_editor_tool SET result = %s WHERE id = %s
         """  # Fixed query syntax
         cursor.execute(query, (result, record_id))
         connection.commit()
-        print("✅ Data inserted successfully into wpl3_editor_tool")
+        print("✅ Data inserted successfully into A11i_editor_tool")
         return True
     except Error as e:
         print(f"❌ Error updating data: {e}")
